@@ -29,20 +29,25 @@ void on_close(uv_handle_t* handle) {
 }
 
 void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
+    printf("on_read.\n");
     await_state_t *state = (await_state_t*)client->data;
     if (nread < 0) {
-        if (nread != UV_EOF) fprintf(stderr, "Read error %s\n", uv_err_name(nread));
+        state->status = 0;
+        if (nread != UV_EOF) {
+            state->status = nread;
+            free(state->data);
+            fprintf(stderr, "Read error %s\n", uv_err_name(nread));
+        }
         uv_close((uv_handle_t*) client, on_close);
         free(buf->base);
 
-        state->status = nread;
         co = state->co;
         return;
     }
 
     int len = state->status + sizeof(char) * (nread+1);
     state->data = realloc(state->data, len);
-    ((char *)state->data)[state->status-1] = '\0';
+    ((char *)state->data)[state->status] = '\0';
     state->status = len;
     strncat(state->data, buf->base, nread);
 
@@ -141,52 +146,53 @@ int co_getaddrinfo(await_state_t *state, const char *node, const char *service, 
 
 void http_get() {
     await_state_t *state = (await_state_t*) malloc(sizeof(await_state_t));
-    memset(state, 0, sizeof(await_state_t));
-    int status = co_getaddrinfo(state, "www.baidu.com", "http", NULL);
-    struct addrinfo *addr = (struct addrinfo*)state->data;
-    if (status < 0) {
-        fprintf(stderr, "co_getaddrinfo error %s\n", uv_err_name(status));
-        if (addr) uv_freeaddrinfo(addr);
-        free(state);
-        return;
-    }
+    do {
+        memset(state, 0, sizeof(await_state_t));
+        int status = co_getaddrinfo(state, "www.baidu.com", "http", NULL);
+        struct addrinfo *addr = (struct addrinfo*)state->data;
+        if (status < 0) {
+            fprintf(stderr, "co_getaddrinfo error %s\n", uv_err_name(status));
+            if (addr) uv_freeaddrinfo(addr);
+            break;
+        }
 
-    memset(state, 0, sizeof(await_state_t));
-    status = co_tcp_connect(state, addr->ai_addr);
-    uv_freeaddrinfo(addr);
-    uv_stream_t *handle = (uv_stream_t*)state->data;
-    if (status < 0) {
-        fprintf(stderr, "connect failed error %s\n", uv_err_name(status));
-        if (handle) free(handle);
-        free(state);
-        return;
-    }
+        memset(state, 0, sizeof(await_state_t));
+        status = co_tcp_connect(state, addr->ai_addr);
+        uv_freeaddrinfo(addr);
+        uv_stream_t *handle = (uv_stream_t*)state->data;
+        if (status < 0) {
+            fprintf(stderr, "connect failed error %s\n", uv_err_name(status));
+            free(handle);
+            break;
+        }
 
-    const char* httpget =
-        "GET / HTTP/1.0\r\n"
-        "Host: www.baidu.com\r\n"
-        "Cache-Control: max-age=0\r\n"
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\r\n"
-        "\r\n";
-    uv_buf_t buffer = uv_buf_init((char*)httpget, strlen(httpget));
-    memset(state, 0, sizeof(await_state_t));
-    status = co_write(state, handle, &buffer, 1);
-    if (status) {
-        fprintf(stderr, "co_write error %s\n", uv_err_name(status));
-        return;
-    }
-    printf("wrote.\n");
+        const char* httpget =
+            "GET / HTTP/1.0\r\n"
+            "Host: www.baidu.com\r\n"
+            "Cache-Control: max-age=0\r\n"
+            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\r\n"
+            "\r\n";
+        uv_buf_t buffer = uv_buf_init((char*)httpget, strlen(httpget));
+        memset(state, 0, sizeof(await_state_t));
+        status = co_write(state, handle, &buffer, 1);
+        if (status) {
+            fprintf(stderr, "co_write error %s\n", uv_err_name(status));
+            break;
+        }
+        printf("wrote.\n");
 
-    memset(state, 0, sizeof(await_state_t));
-    status = co_read_start(state, handle);
-    char *read_data = (char*)state->data;
-    if (status) {
-        fprintf(stderr, "co_read_start error %s\n", uv_err_name(status));
-        return;
-    }
-    printf("read.\n%s\n", read_data);
-    free(read_data);
+        memset(state, 0, sizeof(await_state_t));
+        status = co_read_start(state, handle);
+        char *read_data = (char*)state->data;
+        if (status) {
+            fprintf(stderr, "co_read_start error %s\n", uv_err_name(status));
+            break;
+        }
+        printf("read.\n%s\n", read_data);
+        free(read_data);
+    }while(0);
 
+    free(state);
     aco_exit();
 }
 
@@ -203,20 +209,18 @@ int main() {
     for (;;) {
         uv_run(loop, UV_RUN_NOWAIT);
         if (co) {
+            aco_resume(co);
             if(co->is_end) {
+                printf("co_is_end.\n");
                 break;
             }
-            aco_resume(co);
             co = NULL;
         }
     }
 
     aco_destroy(co);
-    co = NULL;
     aco_share_stack_destroy(sstk);
-    sstk = NULL;
     aco_destroy(main_co);
-    main_co = NULL;
 
     uv_loop_close(loop);
 
