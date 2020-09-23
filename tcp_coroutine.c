@@ -30,6 +30,8 @@ void on_close(uv_handle_t* handle) {
 
 void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     printf("on_read.\n");
+    if (nread == 0) return;
+
     await_state_t *state = (await_state_t*)client->data;
     if (nread < 0) {
         state->status = 0;
@@ -39,7 +41,6 @@ void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
             fprintf(stderr, "Read error %s\n", uv_err_name(nread));
         }
         uv_close((uv_handle_t*) client, on_close);
-        free(buf->base);
 
         co = state->co;
         return;
